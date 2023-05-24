@@ -1,161 +1,249 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.16)
 project(esp-idf C CXX ASM)
 
-if(NOT IDF_PATH)
-    set(IDF_PATH ${CMAKE_CURRENT_LIST_DIR})
+if(CMAKE_CURRENT_LIST_DIR STREQUAL CMAKE_SOURCE_DIR)
+    message(FATAL_ERROR "Current directory '${CMAKE_CURRENT_LIST_DIR}' is not buildable. "
+    "Change directories to one of the example projects in '${CMAKE_CURRENT_LIST_DIR}/examples' and try "
+    "again.")
 endif()
 
-include(tools/cmake/idf_functions.cmake)
+# Variables compile_options, c_compile_options, cxx_compile_options, compile_definitions, link_options shall
+# not be unset as they may already contain flags, set by toolchain-TARGET.cmake files.
 
-#
-# Set variables that control the build configuration and the build itself
-#
-idf_set_variables()
+# Add the following build specifications here, since these seem to be dependent
+# on config values on the root Kconfig.
 
-kconfig_set_variables()
-
-#
-# Generate a component dependencies file, enumerating components to be included in the build
-# as well as their dependencies.
-#
-execute_process(COMMAND "${CMAKE_COMMAND}"
-    -D "COMPONENTS=${IDF_COMPONENTS}"
-    -D "COMPONENT_REQUIRES_COMMON=${IDF_COMPONENT_REQUIRES_COMMON}"
-    -D "EXCLUDE_COMPONENTS=${IDF_EXCLUDE_COMPONENTS}"
-    -D "TEST_COMPONENTS=${IDF_TEST_COMPONENTS}"
-    -D "TEST_EXCLUDE_COMPONENTS=${IDF_TEST_EXCLUDE_COMPONENTS}"
-    -D "BUILD_TESTS=${IDF_BUILD_TESTS}"
-    -D "DEPENDENCIES_FILE=${CMAKE_BINARY_DIR}/component_depends.cmake"
-    -D "COMPONENT_DIRS=${IDF_COMPONENT_DIRS}"
-    -D "BOOTLOADER_BUILD=${BOOTLOADER_BUILD}"
-    -D "IDF_TARGET=${IDF_TARGET}"
-    -D "IDF_PATH=${IDF_PATH}"
-    -D "DEBUG=${DEBUG}"
-    -P "${IDF_PATH}/tools/cmake/scripts/expand_requirements.cmake"
-    WORKING_DIRECTORY "${PROJECT_PATH}"
-    RESULT_VARIABLE expand_requirements_result)
-
-if(expand_requirements_result)
-    message(FATAL_ERROR "Failed to expand component requirements")
-endif()
-
-include("${CMAKE_BINARY_DIR}/component_depends.cmake")
-
-#
-# We now have the following component-related variables:
-#
-# IDF_COMPONENTS is the list of initial components set by the user
-# (or empty to include all components in the build).
-# BUILD_COMPONENTS is the list of components to include in the build.
-# BUILD_COMPONENT_PATHS is the paths to all of these components, obtained from the component dependencies file.
-#
-# Print the list of found components and test components
-#
-string(REPLACE ";" " " BUILD_COMPONENTS_SPACES "${BUILD_COMPONENTS}")
-message(STATUS "Component names: ${BUILD_COMPONENTS_SPACES}")
-unset(BUILD_COMPONENTS_SPACES)
-message(STATUS "Component paths: ${BUILD_COMPONENT_PATHS}")
-
-# Print list of test components
-if(TESTS_ALL EQUAL 1 OR TEST_COMPONENTS)
-    string(REPLACE ";" " " BUILD_TEST_COMPONENTS_SPACES "${BUILD_TEST_COMPONENTS}")
-    message(STATUS "Test component names: ${BUILD_TEST_COMPONENTS_SPACES}")
-    unset(BUILD_TEST_COMPONENTS_SPACES)
-    message(STATUS "Test component paths: ${BUILD_TEST_COMPONENT_PATHS}")
-endif()
-
-# Generate project configuration
-kconfig_process_config()
-
-# Include sdkconfig.cmake so rest of the build knows the configuration
-include(${SDKCONFIG_CMAKE})
-
-# Verify the environment is configured correctly
-idf_verify_environment()
-
-# Check git revision (may trigger reruns of cmake)
-##  sets IDF_VER to IDF git revision
-idf_get_git_revision()
-
-# Check that the targets set in cache, sdkconfig, and in environment all match
-idf_check_config_target()
-
-## get PROJECT_VER
 if(NOT BOOTLOADER_BUILD)
-    app_get_revision("${CMAKE_SOURCE_DIR}")
-endif()
 
-# Add some idf-wide definitions
-idf_set_global_compile_options()
-
-# generate compile_commands.json (needs to come after project)
-set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
-
-#
-# Setup variables for linker script generation
-#
-ldgen_set_variables()
-
-# Include any top-level project_include.cmake files from components
-foreach(component ${BUILD_COMPONENT_PATHS})
-    set(COMPONENT_PATH "${component}")
-    include_if_exists("${component}/project_include.cmake")
-    unset(COMPONENT_PATH)
-endforeach()
-
-#
-# Add each component to the build as a library
-#
-foreach(COMPONENT_PATH ${BUILD_COMPONENT_PATHS})
-    get_filename_component(COMPONENT_NAME ${COMPONENT_PATH} NAME)
-
-    list(FIND BUILD_TEST_COMPONENT_PATHS ${COMPONENT_PATH} idx)
-
-    if(NOT idx EQUAL -1)
-        list(GET BUILD_TEST_COMPONENTS ${idx} test_component)
-        set(COMPONENT_NAME ${test_component})
+    if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+        list(APPEND compile_options "-Os")
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+            list(APPEND compile_options "-freorder-blocks")
+        endif()
+    elseif(CONFIG_COMPILER_OPTIMIZATION_DEFAULT)
+        list(APPEND compile_options "-Og")
+    elseif(CONFIG_COMPILER_OPTIMIZATION_NONE)
+        list(APPEND compile_options "-O0")
+    elseif(CONFIG_COMPILER_OPTIMIZATION_PERF)
+        list(APPEND compile_options "-O2")
     endif()
 
-    component_get_target(COMPONENT_TARGET ${COMPONENT_NAME})
+else()  # BOOTLOADER_BUILD
 
-    add_subdirectory(${COMPONENT_PATH} ${COMPONENT_NAME})
-endforeach()
-unset(COMPONENT_NAME)
-unset(COMPONENT_PATH)
-
-# each component should see the include directories of its requirements
-#
-# (we can't do this until all components are registered and targets exist in cmake, as we have
-# a circular requirements graph...)
-foreach(component ${BUILD_COMPONENTS})
-    component_get_target(component_target ${component})
-    if(TARGET ${component_target})
-        get_component_requirements(${component} deps priv_deps)
-
-        list(APPEND priv_deps ${IDF_COMPONENT_REQUIRES_COMMON})
-
-        foreach(dep ${deps})
-            component_get_target(dep_target ${dep})
-            add_component_dependencies(${component_target} ${dep_target} PUBLIC)
-        endforeach()
-
-        foreach(dep ${priv_deps})
-            component_get_target(dep_target ${dep})
-            add_component_dependencies(${component_target} ${dep_target} PRIVATE)
-        endforeach()
+    if(CONFIG_BOOTLOADER_COMPILER_OPTIMIZATION_SIZE)
+        list(APPEND compile_options "-Os")
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+            list(APPEND compile_options "-freorder-blocks")
+        endif()
+    elseif(CONFIG_BOOTLOADER_COMPILER_OPTIMIZATION_DEBUG)
+        list(APPEND compile_options "-Og")
+    elseif(CONFIG_BOOTLOADER_COMPILER_OPTIMIZATION_NONE)
+        list(APPEND compile_options "-O0")
+    elseif(CONFIG_BOOTLOADER_COMPILER_OPTIMIZATION_PERF)
+        list(APPEND compile_options "-O2")
     endif()
-endforeach()
 
-if(IDF_BUILD_ARTIFACTS)
-    # Write project description JSON file
-    make_json_list("${BUILD_COMPONENTS}" build_components_json)
-    make_json_list("${BUILD_COMPONENT_PATHS}" build_component_paths_json)
-    configure_file("${IDF_PATH}/tools/cmake/project_description.json.in"
-        "${IDF_BUILD_ARTIFACTS_DIR}/project_description.json")
-    unset(build_components_json)
-    unset(build_component_paths_json)
 endif()
 
-set(BUILD_COMPONENTS ${BUILD_COMPONENTS} PARENT_SCOPE)
+if(CONFIG_COMPILER_CXX_EXCEPTIONS)
+    list(APPEND cxx_compile_options "-fexceptions")
+else()
+    list(APPEND cxx_compile_options "-fno-exceptions")
+endif()
 
-ldgen_add_dependencies()
+if(CONFIG_COMPILER_CXX_RTTI)
+    list(APPEND cxx_compile_options "-frtti")
+else()
+    list(APPEND cxx_compile_options "-fno-rtti")
+    list(APPEND link_options "-fno-rtti")           # used to invoke correct multilib variant (no-rtti) during linking
+endif()
+
+if(CONFIG_COMPILER_SAVE_RESTORE_LIBCALLS)
+    list(APPEND compile_options "-msave-restore")
+endif()
+
+if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+    list(APPEND c_compile_options "-Wno-old-style-declaration")
+endif()
+
+# Clang finds some warnings in IDF code which GCC doesn't.
+# All these warnings should be fixed before Clang is presented
+# as a toolchain choice for users.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    # Clang checks Doxygen comments for being in sync with function prototype.
+    # There are some inconsistencies, especially in ROM headers.
+    list(APPEND compile_options "-Wno-documentation")
+    # GCC allows repeated typedefs when the source and target types are the same.
+    # Clang doesn't allow this. This occurs in many components due to forward
+    # declarations.
+    list(APPEND compile_options "-Wno-typedef-redefinition")
+    # This issue is seemingly related to newlib's char type functions.
+    # Fix is not clear yet.
+    list(APPEND compile_options "-Wno-char-subscripts")
+    # Clang seems to notice format string issues which GCC doesn't.
+    list(APPEND compile_options "-Wno-format-security")
+    # Logic bug in essl component
+    list(APPEND compile_options "-Wno-tautological-overlap-compare")
+    # Some pointer checks in mDNS component check addresses which can't be NULL
+    list(APPEND compile_options "-Wno-tautological-pointer-compare")
+    # Similar to the above, in tcp_transport
+    list(APPEND compile_options "-Wno-pointer-bool-conversion")
+    # mbedTLS md5.c triggers this warning in md5_test_buf (false positive)
+    list(APPEND compile_options "-Wno-string-concatenation")
+    # multiple cases of implict convertions between unrelated enum types
+    list(APPEND compile_options "-Wno-enum-conversion")
+    # When IRAM_ATTR is specified both in function declaration and definition,
+    # it produces different section names, since section names include __COUNTER__.
+    # Occurs in multiple places.
+    list(APPEND compile_options "-Wno-section")
+    # Multiple cases of attributes unknown to clang, for example
+    # __attribute__((optimize("-O3")))
+    list(APPEND compile_options "-Wno-unknown-attributes")
+    # Disable Clang warnings for atomic operations with access size
+    # more then 4 bytes
+    list(APPEND compile_options "-Wno-atomic-alignment")
+    # Clang also produces many -Wunused-function warnings which GCC doesn't.
+    # However these aren't treated as errors.
+endif()
+# More warnings may exist in unit tests and example projects.
+
+if(CONFIG_COMPILER_WARN_WRITE_STRINGS)
+    list(APPEND compile_options "-Wwrite-strings")
+endif()
+
+if(CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE)
+    list(APPEND compile_definitions "-DNDEBUG")
+endif()
+
+if(CONFIG_COMPILER_STACK_CHECK_MODE_NORM)
+    list(APPEND compile_options "-fstack-protector")
+elseif(CONFIG_COMPILER_STACK_CHECK_MODE_STRONG)
+    list(APPEND compile_options "-fstack-protector-strong")
+elseif(CONFIG_COMPILER_STACK_CHECK_MODE_ALL)
+    list(APPEND compile_options "-fstack-protector-all")
+endif()
+
+if(CONFIG_COMPILER_DUMP_RTL_FILES)
+    list(APPEND compile_options "-fdump-rtl-expand")
+endif()
+
+if(NOT ${CMAKE_C_COMPILER_VERSION} VERSION_LESS 8.0.0)
+    if(CONFIG_COMPILER_HIDE_PATHS_MACROS)
+        list(APPEND compile_options "-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=.")
+        list(APPEND compile_options "-fmacro-prefix-map=${IDF_PATH}=/IDF")
+    endif()
+
+    if(CONFIG_APP_REPRODUCIBLE_BUILD)
+        idf_build_set_property(DEBUG_PREFIX_MAP_GDBINIT "${BUILD_DIR}/prefix_map_gdbinit")
+
+        list(APPEND compile_options "-fdebug-prefix-map=${IDF_PATH}=/IDF")
+        list(APPEND compile_options "-fdebug-prefix-map=${PROJECT_DIR}=/IDF_PROJECT")
+        list(APPEND compile_options "-fdebug-prefix-map=${BUILD_DIR}=/IDF_BUILD")
+
+        # component dirs
+        idf_build_get_property(python PYTHON)
+        idf_build_get_property(idf_path IDF_PATH)
+        idf_build_get_property(component_dirs BUILD_COMPONENT_DIRS)
+
+        execute_process(
+            COMMAND ${python}
+                "${idf_path}/tools/generate_debug_prefix_map.py"
+                "${BUILD_DIR}"
+                "${component_dirs}"
+            OUTPUT_VARIABLE result
+            RESULT_VARIABLE ret
+        )
+        if(NOT ret EQUAL 0)
+            message(FATAL_ERROR "This is a bug. Please report to https://github.com/espressif/esp-idf/issues")
+        endif()
+
+        spaces2list(result)
+        list(LENGTH component_dirs length)
+        math(EXPR max_index "${length} - 1")
+        foreach(index RANGE ${max_index})
+            list(GET component_dirs ${index} folder)
+            list(GET result ${index} after)
+            list(APPEND compile_options "-fdebug-prefix-map=${folder}=${after}")
+        endforeach()
+    endif()
+endif()
+
+# GCC-specific options
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    list(APPEND compile_options "-fstrict-volatile-bitfields"
+                                "-Wno-error=unused-but-set-variable"
+                                )
+endif()
+
+if(CONFIG_ESP_SYSTEM_USE_EH_FRAME)
+  list(APPEND compile_options "-fasynchronous-unwind-tables")
+  list(APPEND link_options "-Wl,--eh-frame-hdr")
+endif()
+
+list(APPEND link_options "-fno-lto")
+
+if(CONFIG_IDF_TARGET_LINUX AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    list(APPEND link_options "-Wl,-dead_strip")
+    list(APPEND link_options "-Wl,-warn_commons")
+else()
+    list(APPEND link_options "-Wl,--gc-sections")
+    list(APPEND link_options "-Wl,--warn-common")
+endif()
+
+# SMP FreeRTOS user provided minimal idle hook. This allows the user to provide
+# their own copy of vApplicationMinimalIdleHook()
+if(CONFIG_FREERTOS_USE_MINIMAL_IDLE_HOOK)
+    list(APPEND link_options "-Wl,--wrap=vApplicationMinimalIdleHook")
+endif()
+
+# Placing jump tables in flash would cause issues with code that required
+# to be placed in IRAM
+list(APPEND compile_options "-fno-jump-tables")
+if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+    # This flag is GCC-specific.
+    # Not clear yet if some other flag should be used for Clang.
+    list(APPEND compile_options "-fno-tree-switch-conversion")
+endif()
+
+if(CMAKE_C_COMPILER_ID MATCHES "LLVM")
+    list(APPEND compile_options "-fno-use-cxa-atexit")
+endif()
+
+# For the transition period from 32-bit time_t to 64-bit time_t,
+# auto-detect the size of this type and set corresponding variable.
+include(CheckTypeSize)
+check_type_size("time_t" TIME_T_SIZE)
+if(TIME_T_SIZE)
+    idf_build_set_property(TIME_T_SIZE ${TIME_T_SIZE})
+else()
+    message(FATAL_ERROR "Failed to determine sizeof(time_t)")
+endif()
+
+idf_build_set_property(COMPILE_OPTIONS "${compile_options}" APPEND)
+idf_build_set_property(C_COMPILE_OPTIONS "${c_compile_options}" APPEND)
+idf_build_set_property(CXX_COMPILE_OPTIONS "${cxx_compile_options}" APPEND)
+idf_build_set_property(ASM_COMPILE_OPTIONS "${asm_compile_options}" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "${compile_definitions}" APPEND)
+idf_build_set_property(LINK_OPTIONS "${link_options}" APPEND)
+
+idf_build_get_property(build_component_targets __BUILD_COMPONENT_TARGETS)
+
+# Add each component as a subdirectory, processing each component's CMakeLists.txt
+foreach(component_target ${build_component_targets})
+    __component_get_property(dir ${component_target} COMPONENT_DIR)
+    __component_get_property(_name ${component_target} COMPONENT_NAME)
+    __component_get_property(prefix ${component_target} __PREFIX)
+    __component_get_property(alias ${component_target} COMPONENT_ALIAS)
+    set(COMPONENT_NAME ${_name})
+    set(COMPONENT_DIR ${dir})
+    set(COMPONENT_ALIAS ${alias})
+    set(COMPONENT_PATH ${dir}) # for backward compatibility only, COMPONENT_DIR is preferred
+    idf_build_get_property(build_prefix __PREFIX)
+    set(__idf_component_context 1)
+    if(NOT prefix STREQUAL build_prefix)
+        add_subdirectory(${dir} ${prefix}_${_name})
+    else()
+        add_subdirectory(${dir} ${_name})
+    endif()
+    set(__idf_component_context 0)
+endforeach()
